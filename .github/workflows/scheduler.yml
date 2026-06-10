@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
 
       - run: pip install -r requirements.txt
-
+      
       - run: python check_teetimes.py
         env:
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
