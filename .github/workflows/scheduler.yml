@@ -1,0 +1,26 @@
+name: Golf Tee Time Checker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python check_teetimes.py
+        env:
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          TWILIO_TO: ${{ secrets.TWILIO_TO }}
