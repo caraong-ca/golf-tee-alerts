@@ -2,6 +2,7 @@ import requests
 from datetime import datetime, timedelta, time
 import os
 import re
+import json
 from twilio.rest import Client
 
 # ---------------- CONFIG ----------------
@@ -10,17 +11,33 @@ BASE_URL = "https://golfvancouver.cps.golf/onlineresweb/search-teetime"
 PLAYER_COUNT = os.getenv("PLAYERS", "1")
 COURSE_IDS = os.getenv("COURSE_IDS", "1,2,3").split(",")
 
-START_TIME = time(16, 0)  # 4:00 PM
-END_TIME = time(18, 0)    # 6:00 PM
+START_TIME = time(16, 0)
+END_TIME = time(18, 0)
 DAYS_AHEAD = 4
 
-# -------- TWILIO CONFIG (ENV VARS) --------
-TWILIO_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
+STATE_FILE = "state.json"
+
+# ---------------- TWILIO ----------------
+client = Client(
+    os.environ["TWILIO_ACCOUNT_SID"],
+    os.environ["TWILIO_AUTH_TOKEN"]
+)
+
 TWILIO_FROM = os.environ["TWILIO_FROM_NUMBER"]
 TWILIO_TO = os.environ["TWILIO_TO_NUMBER"]
 
-client = Client(TWILIO_SID, TWILIO_TOKEN)
+
+# ---------------- STATE ----------------
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
 
 # ---------------- HELPERS ----------------
@@ -74,9 +91,14 @@ def send_sms(message):
     )
 
 
+def make_key(date, course, t):
+    return f"{date}|{course}|{t}"
+
+
 # ---------------- MAIN ----------------
 def main():
-    all_matches = []
+    state = load_state()
+    new_matches = []
 
     for d in build_dates():
         date_str = d.strftime("%Y-%m-%d")
@@ -87,32 +109,31 @@ def main():
                 times = extract_times(html)
                 filtered = filter_times(times)
 
-                if filtered:
-                    all_matches.append({
-                        "date": date_str,
-                        "course": course_id,
-                        "times": filtered
-                    })
+                for t in filtered:
+                    key = make_key(date_str, course_id, t)
+
+                    if key not in state:
+                        state[key] = True
+                        new_matches.append((date_str, course_id, t))
 
             except Exception as e:
                 print(f"Error {date_str} course {course_id}: {e}")
 
-    # -------- NOTIFY ONLY IF MATCHES --------
-    if all_matches:
-        message_lines = ["⛳ Tee Time Alert Found!"]
+    if new_matches:
+        message = ["⛳ New Tee Time Alert"]
 
-        for m in all_matches:
-            message_lines.append(
-                f"{m['date']} | Course {m['course']} | {', '.join(m['times'])}"
-            )
+        for date_str, course_id, t in new_matches:
+            message.append(f"{date_str} | Course {course_id} | {t}")
 
-        message = "\n".join(message_lines)
+        final_message = "\n".join(message)
 
-        print(message)
-        send_sms(message)
+        print(final_message)
+        send_sms(final_message)
+
+        save_state(state)
 
     else:
-        print("No matches found.")
+        print("No new tee times found.")
 
 
 if __name__ == "__main__":
