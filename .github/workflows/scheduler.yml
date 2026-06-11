@@ -36,7 +36,7 @@ jobs:
           TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
           TWILIO_TO_NUMBER: ${{ secrets.TWILIO_TO_NUMBER }}
 
-        run: python tee_time_monitor.py
+        run: python check_teetimes.py
 
       - name: Commit updated state (dedupe memory)
         run: |
