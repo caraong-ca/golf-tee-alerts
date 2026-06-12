@@ -39,20 +39,20 @@ jobs:
         run: python check_teetimes.py
 
       - name: Commit updated state (dedupe memory)
-      run: |
-        if [ ! -f state.json ]; then
-        echo "No state.json created"
-        exit 0
-        fi
+        run: |
+          if [ ! -f state.json ]; then
+            echo "No state.json created"
+            exit 0
+          fi
 
-        git config user.name "github-actions"
-        git config user.email "github-actions@github.com"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
 
-        git add state.json
+          git add state.json
 
-        if git diff --cached --quiet; then
-          echo "No state changes to commit"
-        else
-          git commit -m "Update tee time state [skip ci]"
-          git push
-        fi
+          if git diff --cached --quiet; then
+            echo "No state changes to commit"
+          else
+            git commit -m "Update tee time state [skip ci]"
+            git push
+          fi
