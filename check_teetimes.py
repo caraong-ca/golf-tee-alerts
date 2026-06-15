@@ -6,7 +6,7 @@ import json
 from twilio.rest import Client
 
 # ---------------- CONFIG ----------------
-BASE_URL = "https://golfvancouver.cps.golf/onlineresweb/search-teetime"
+BASE_URL = "https://golfvancouver.cps.golf/onlineres/onlineapi/api/v1/onlinereservation/TeeTimes"
 
 PLAYER_COUNT = os.getenv("PLAYERS", "1")
 COURSE_IDS = os.getenv("COURSE_IDS", "1,2,3").split(",")
