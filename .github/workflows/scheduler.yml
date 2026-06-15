@@ -32,7 +32,9 @@ jobs:
         env:
           PLAYERS: "ANY"
           COURSE_IDS: "1,2,3"
-
+          
+          GOLF_USERNAME: ${{ secrets.GOLF_USERNAME }}
+          GOLF_PASSWORD: ${{ secrets.GOLF_PASSWORD }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_TOKEN }}
           TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM }}
