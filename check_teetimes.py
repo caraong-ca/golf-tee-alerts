@@ -1,38 +1,27 @@
-import requests
-from datetime import datetime, timedelta, time
 import os
 import json
+import re
+from datetime import datetime, timedelta, time
 from twilio.rest import Client
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-# ---------------- CONFIG ----------------
-BASE_URL = "https://golfvancouver.cps.golf/onlineres/onlineapi/api/v1/onlinereservation/TeeTimes"
+STATE_FILE = "state.json"
 
-PLAYERS = os.getenv("PLAYERS", "ANY")
-COURSE_IDS = os.getenv("COURSE_IDS", "1,2,3")
+GOLF_USERNAME = os.environ["GOLF_USERNAME"]
+GOLF_PASSWORD = os.environ["GOLF_PASSWORD"]
+
+TWILIO_FROM = os.environ["TWILIO_FROM_NUMBER"]
+TWILIO_TO = os.environ["TWILIO_TO_NUMBER"]
 
 START_TIME = time(16, 0)
 END_TIME = time(18, 0)
 DAYS_AHEAD = 4
 
-STATE_FILE = "state.json"
+COURSE_NAMES = ["Fraserview", "McCleery", "Langara"]
 
-COURSE_NAMES = {
-    "1": "Fraserview",
-    "2": "McCleery",
-    "3": "Langara",
-}
-
-# ---------------- TWILIO ----------------
-client = Client(
-    os.environ["TWILIO_ACCOUNT_SID"],
-    os.environ["TWILIO_AUTH_TOKEN"]
-)
-
-TWILIO_FROM = os.environ["TWILIO_FROM_NUMBER"]
-TWILIO_TO = os.environ["TWILIO_TO_NUMBER"]
+BASE_URL = "https://golfvancouver.cps.golf/onlineresweb/search-teetime"
 
 
-# ---------------- STATE ----------------
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -45,7 +34,6 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-# ---------------- HELPERS ----------------
 def is_weekend(d):
     return d.weekday() >= 5
 
@@ -62,113 +50,31 @@ def build_dates():
     return dates
 
 
-def player_count_for_api():
-    if str(PLAYERS).upper() == "ANY":
-        return 0
-    return int(PLAYERS)
+def parse_times_from_text(text):
+    raw_times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?[APap][Mm])?\b|\b(?:1[0-2]|0?[1-9]):[0-5]\d\s?[APap][Mm]\b", text)
+    results = []
 
+    for raw in raw_times:
+        raw = raw.strip()
 
-def fetch_times(d):
-    search_date = d.strftime("%a %b %-d %Y")
-
-    params = {
-        "searchDate": search_date,
-        "holes": 18,
-        "numberOfPlayer": player_count_for_api(),
-        "courseIds": COURSE_IDS,
-        "searchTimeType": 0,
-        "teeOffTimeMin": 16,
-        "teeOffTimeMax": 18,
-        "isChangeTeeOffTime": "true",
-        "teeSheetSearchView": 5,
-        "classCode": "R",
-        "defaultOnlineRate": "N",
-        "isUseCapacityPricing": "false",
-        "memberStoreId": 1,
-        "searchType": 1,
-    }
-
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "user-agent": "Mozilla/5.0",
-        "referer": "https://golfvancouver.cps.golf/onlineresweb/search-teetime",
-    }
-
-    r = requests.get(BASE_URL, params=params, headers=headers, timeout=20)
-
-    print("Request URL:", r.url)
-
-    if r.status_code == 403:
-        print("403 Forbidden. The site may require a fresh browser session or authorization token.")
-
-    r.raise_for_status()
-    return r.json()
-
-
-def extract_matches(data):
-    matches = []
-
-    def walk(obj):
-        if isinstance(obj, dict):
-            time_value = (
-                obj.get("teeOffTime")
-                or obj.get("teeTime")
-                or obj.get("time")
-                or obj.get("startTime")
-            )
-
-            course_id = str(
-                obj.get("courseId")
-                or obj.get("courseID")
-                or obj.get("CourseId")
-                or ""
-            )
-
-            if time_value:
-                tee_time = parse_time(time_value)
-
-                if tee_time and START_TIME <= tee_time <= END_TIME:
-                    matches.append({
-                        "course_id": course_id,
-                        "time": tee_time.strftime("%H:%M")
-                    })
-
-            for value in obj.values():
-                walk(value)
-
-        elif isinstance(obj, list):
-            for item in obj:
-                walk(item)
-
-    walk(data)
-    return matches
-
-
-def parse_time(value):
-    value = str(value)
-
-    possible_formats = [
-        "%H:%M:%S",
-        "%H:%M",
-        "%I:%M %p",
-    ]
-
-    if len(value) >= 8:
-        possible_values = [value[-8:], value]
-    else:
-        possible_values = [value]
-
-    for possible_value in possible_values:
-        for fmt in possible_formats:
+        for fmt in ["%H:%M", "%I:%M %p", "%I:%M%p"]:
             try:
-                return datetime.strptime(possible_value, fmt).time()
+                parsed = datetime.strptime(raw.upper(), fmt).time()
+                if START_TIME <= parsed <= END_TIME:
+                    results.append(parsed.strftime("%H:%M"))
+                break
             except ValueError:
-                continue
+                pass
 
-    return None
+    return sorted(set(results))
 
 
 def send_sms(message):
+    client = Client(
+        os.environ["TWILIO_ACCOUNT_SID"],
+        os.environ["TWILIO_AUTH_TOKEN"]
+    )
+
     client.messages.create(
         body=message,
         from_=TWILIO_FROM,
@@ -176,48 +82,161 @@ def send_sms(message):
     )
 
 
-def make_key(date, course, tee_time):
-    return f"{date}|{course}|{tee_time}"
+def click_if_visible(page, text, timeout=3000):
+    try:
+        page.get_by_text(text, exact=False).click(timeout=timeout)
+        return True
+    except Exception:
+        return False
 
 
-# ---------------- MAIN ----------------
+def login(page):
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+
+    # Common cookie / consent popups
+    click_if_visible(page, "Accept", timeout=2000)
+    click_if_visible(page, "I Agree", timeout=2000)
+
+    # Try to open login form
+    for label in ["Login", "Log In", "Sign In", "My Account"]:
+        if click_if_visible(page, label, timeout=3000):
+            break
+
+    page.wait_for_timeout(3000)
+
+    # Try common username/email fields
+    username_selectors = [
+        "input[type='email']",
+        "input[name='email']",
+        "input[name='username']",
+        "input[id*='email' i]",
+        "input[id*='user' i]",
+        "input[placeholder*='email' i]",
+        "input[placeholder*='user' i]",
+    ]
+
+    password_selectors = [
+        "input[type='password']",
+        "input[name='password']",
+        "input[id*='password' i]",
+        "input[placeholder*='password' i]",
+    ]
+
+    username_filled = False
+    for selector in username_selectors:
+        try:
+            page.locator(selector).first.fill(GOLF_USERNAME, timeout=5000)
+            username_filled = True
+            break
+        except Exception:
+            pass
+
+    password_filled = False
+    for selector in password_selectors:
+        try:
+            page.locator(selector).first.fill(GOLF_PASSWORD, timeout=5000)
+            password_filled = True
+            break
+        except Exception:
+            pass
+
+    if not username_filled or not password_filled:
+        page.screenshot(path="login_debug.png", full_page=True)
+        raise RuntimeError("Could not find login fields. Saved login_debug.png.")
+
+    for label in ["Login", "Log In", "Sign In", "Submit"]:
+        if click_if_visible(page, label, timeout=3000):
+            break
+
+    page.wait_for_load_state("networkidle", timeout=60000)
+    page.wait_for_timeout(5000)
+
+    print("Login step completed.")
+
+
+def check_date(page, d):
+    date_string = d.strftime("%Y-%m-%d")
+    url = f"{BASE_URL}?TeeOffTimeMin=0&TeeOffTimeMax=23"
+
+    page.goto(url, wait_until="networkidle", timeout=60000)
+    page.wait_for_timeout(3000)
+
+    # Try filling date if a date input exists
+    try:
+        date_input = page.locator("input[type='date']").first
+        date_input.fill(date_string, timeout=3000)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(3000)
+    except Exception:
+        pass
+
+    # Try clicking/searching if needed
+    for label in ["Search", "Find Tee Times", "Apply"]:
+        click_if_visible(page, label, timeout=1500)
+
+    page.wait_for_timeout(5000)
+
+    text = page.inner_text("body")
+    times = parse_times_from_text(text)
+
+    matches = []
+
+    for tee_time in times:
+        # Course detection is imperfect from page text, so label as Vancouver Golf if needed.
+        matches.append({
+            "date": date_string,
+            "course": "Vancouver Golf",
+            "time": tee_time
+        })
+
+    print(f"{date_string}: found {len(matches)} possible times between 4–6 PM.")
+    return matches
+
+
 def main():
     state = load_state()
     new_matches = []
 
-    for d in build_dates():
-        date_str = d.strftime("%Y-%m-%d")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
 
-        try:
-            data = fetch_times(d)
-            matches = extract_matches(data)
+        context = browser.new_context(
+            timezone_id="America/Vancouver",
+            viewport={"width": 1440, "height": 1200},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        )
 
-            for match in matches:
-                course_id = match["course_id"] or "?"
-                tee_time = match["time"]
+        page = context.new_page()
 
-                key = make_key(date_str, course_id, tee_time)
+        login(page)
 
-                if key not in state:
-                    state[key] = True
-                    new_matches.append((date_str, course_id, tee_time))
+        for d in build_dates():
+            try:
+                matches = check_date(page, d)
 
-        except Exception as e:
-            print(f"Error {date_str}: {e}")
+                for match in matches:
+                    key = f"{match['date']}|{match['course']}|{match['time']}"
+
+                    if key not in state:
+                        state[key] = True
+                        new_matches.append(match)
+
+            except Exception as e:
+                print(f"Error checking {d}: {e}")
+                page.screenshot(path=f"debug_{d}.png", full_page=True)
+
+        browser.close()
 
     if new_matches:
-        message = ["⛳ New Tee Time Alert"]
+        lines = ["⛳ New Tee Time Alert"]
 
-        for date_str, course_id, tee_time in new_matches:
-            course_name = COURSE_NAMES.get(course_id, f"Course {course_id}")
-            message.append(f"{date_str} | {course_name} | {tee_time}")
+        for match in new_matches:
+            lines.append(f"{match['date']} | {match['course']} | {match['time']}")
 
-        final_message = "\n".join(message)
-
-        print(final_message)
-        send_sms(final_message)
+        message = "\n".join(lines)
+        print(message)
+        send_sms(message)
         save_state(state)
-
     else:
         print("No new tee times found.")
 
