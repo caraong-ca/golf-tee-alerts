@@ -24,7 +24,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests twilio
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
 
       - name: Run tee time monitor
         env:
